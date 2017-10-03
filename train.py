@@ -31,6 +31,7 @@ class Language:
     def addSentence(self, sentence):
         for word in sentence.split(" "):
             self.addWord(word)
+
         
 
 
