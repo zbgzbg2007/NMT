@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import random
 import numpy as np
+import argparse
 
 import torch.autograd as ag
 from torch import optim
@@ -61,9 +62,9 @@ def readWords(file1, file2, lang1, lang2):
     # file1 (list of strings): list of paths for language1 files including 
     # training file, test file and validation file.
     # file2 (list of strings): list of paths for language2 files corresponding those in file1 
-    for j in range(3):
+    for j in range(len(file1)):
         lines1 = open(file1[j], encoding='utf-8').read().strip().split('\n')
-        lines2 = open(file1[j], encoding='utf-8').read().strip().split('\n')
+        lines2 = open(file2[j], encoding='utf-8').read().strip().split('\n')
         for i in range(len(lines1)):
             lang1.addSentence(lines1[i])
             lang2.addSentence(lines2[i])
@@ -76,6 +77,7 @@ def IndicesFromPairs(pair, lang1, lang2):
     # lang1 (Language class): first language
     # lang2 (Language class): second language
     # return a pair of Variables representing word indices for the pair of sentences 
+
     id1 = [lang1.word2index[i] for i in pair[0].split(' ')]
     id2 = [lang2.word2index[i] for i in pair[1].split(' ')]
     id1.append(lang1.EOS_token)
@@ -103,13 +105,13 @@ def train(myNMT, args, lang1, lang2):
     # lang2 (Language class): target language
 
     myoptim = optim.Adam(myNMT.parameters(), lr=args.lr)
-    loss = nn.NLLLOSS()
+    loss = nn.NLLLoss()
     
     training_data = [ IndicesFromPairs(p, lang1, lang2) for p in readPairs(args.source_training_file, args.target_training_file) ]
-    validation_data = [ IndicesFromPairs(p, lang1, lang2) for p in readPairs(args.source_validation_file, args.target_validation_file) ] 
+    ##validation_data = [ IndicesFromPairs(p, lang1, lang2) for p in readPairs(args.source_validation_file, args.target_validation_file) ] 
 
     # generate batches
-    def generateBatches(data, batch_size)
+    def generateBatches(data, batch_size):
         batches = []
         batch = []
         for i in range(len(data)): 
@@ -123,24 +125,24 @@ def train(myNMT, args, lang1, lang2):
         return batches
 
     training_batches_pairs = generateBatches(training_data, args.batch_size)
-    validation_batchs = generateBatches(validation_data, args.batch_size) ### need batch??
+    ##validation_batchs = generateBatches(validation_data, args.batch_size) ### need batch??
     mask = [] # for target only
     
     # transfer batches to padded Variables
     training_batches = []
     source_len, target_len = [], []
     for b in training_batches_pairs: 
-        source_batch = [ [lang1.word2index[w] for w in sentence[0]]  for sentence in b] 
-        target_batch = [ [lang2.word2index[w] for w in sentence[1]]  for sentence in b] 
-        max_len = len(source_batch[0]))
+        source_batch = [ sentence[0]  for sentence in b] 
+        target_batch = [ sentence[1]  for sentence in b] 
         source_len.append([len(s) for s in source_batch])
         target_len.append([len(s) for s in target_batch])
-        source_batch = [ s + [self.PAD_token] * (max_len - len(s)) for s in source_batch] 
-        max_len = max(target_len)
-        target_batch = [ s + [self.PAD_token] * (max_len - len(s)) for s in target_batch] 
+        max_len = source_len[-1][0]
+        source_batch = [ s + [lang1.PAD_token] * (max_len - len(s)) for s in source_batch] 
+        max_len = max(target_len[-1])
+        target_batch = [ s + [lang2.PAD_token] * (max_len - len(s)) for s in target_batch] 
 
         # mask for target sentence
-        mask.append(torch.FloatTensor([([1] * (len(s[1]))) + ([0] * (max_len - len(s[1])))) for s in target_batch])
+        #mask.append(torch.FloatTensor([([1] * (len(s[1]))) + ([0] * (max_len - len(s[1]))) for s in target_batch]))
         source_variable = ag.Variable(torch.LongTensor(source_batch))
         target_variable = ag.Variable(torch.LongTensor(target_batch))
         if args.gpu:
@@ -148,39 +150,37 @@ def train(myNMT, args, lang1, lang2):
             target_variable = target.variable.cuda()
         training_batches.append((source_variable, target_variable))
        
-            
     for e in range(args.num_epoch):
         for i in range(len(training_batches)):
             source, target = training_batches[i]
             myoptim.zero_grad()
-            decoder_init_input = ag.Variable(torch.LongTensor([[lang2.SOS_token] * target.size()[0]]))
-            if args.gpu:
-                decoder_init_input = decoder_init_input.cuda()
      
             # train network
             encoder_outputs, encoder_hidden = myNMT.encoder(source, source_len[i])
 
             # encoder has bidirectional rnn, dimensions are different 
             decoder_hidden = myNMT.decoder.init_hidden(encoder_hidden) 
-            decoder_outputs = Variable(torch.zeros(target.size()[0], decoder_steps, myNMT.decoder.output_size))
-            decoder_input = decoder_init_input
-            batch_size, length, _ = target.size()
+            batch_size, length = target.size()
+            ##decoder_outputs = ag.Variable(torch.zeros(target.size()[0], length, myNMT.decoder.output_size))
+            decoder_input = ag.Variable(torch.LongTensor([lang2.SOS_token]  * target.size()[0]))
+            if args.gpu:
+                decoder_input = decoder_input.cuda()
             loss = 0
             criterion = nn.CrossEntropyLoss()
             for j in range(length):
                 decoder_output, decoder_hidden = myNMT.decoder(decoder_input, decoder_hidden, encoder_outputs)
-                decoder_outputs[j] = decoder_output
+                ##decoder_outputs[j] = decoder_output
 
                 # compute loss with mask 
-                mask_tensor = torch.from_numpy((target_len[i] > j).astype(np.int32)).byte()
+                mask_tensor = torch.from_numpy((np.array(target_len[i]) > j).astype(np.int32)).byte()
                 masked_index = ag.Variable(torch.masked_select(torch.arange(0, batch_size), mask_tensor).long())
                 if args.gpu:
                     masked_index = masked_index.cuda()
                 masked_outputs = torch.index_select(decoder_output, 0, masked_index)
                 masked_targets = torch.index_select(target[:, j], 0, masked_index)
-                loss += creterion(masked_outputs, masked_targets)
+                loss += criterion(masked_outputs, masked_targets)
 
-                decoder_input = target[j]
+                decoder_input = target[:,j]
 
             loss = loss.div(sum(target_len[i]))
             loss.backward()
@@ -235,14 +235,17 @@ def Evaluate(myNMT, file_name, args, lang1, lang2, max_len=60):
 parser = argparse.ArgumentParser(description='NMT')
 parser.add_argument('--lr', type=float, default=0.0002, help='learning rate') 
 parser.add_argument('--num-epoch', type=int, default=30, help='total number of epochs to train; in each epoch we train all sentences once' )
-parser.add_argument('--batch', type=int, default=64, help='batch size for training')
+##parser.add_argument('--batch', type=int, default=64, help='batch size for training')
+parser.add_argument('--batch-size', type=int, default=4, help='batch size for training')
 parser.add_argument('--gpu', type=bool, default=True, help='if use gpu')
-parser.add_argument('--source-training-file', default='/data/train.de-en.de', help='path for source training file')
-parser.add_argument('--target-training-file', default='/data/train.de-en.en', help='path for target training file')
-parser.add_argument('--source-validation-file', default='/orig/valid.de-en.de', help='path for source validation file')
-parser.add_argument('--target-validation-file', default='/orig/valid.de-en.en', help='path for target validation file')
-parser.add_argument('--source-testing-file', default='/orig/test.de-en.de', help='path for source testing file')
-parser.add_argument('--target-testing-file', default='/orig/test.de-en.en', help='path for target testing file')
+##parser.add_argument('--source-training-file', default='data/train.de-en.de', help='path for source training file')
+##parser.add_argument('--target-training-file', default='data/train.de-en.en', help='path for target training file')
+parser.add_argument('--source-training-file', default='data/test.de', help='path for source training file')
+parser.add_argument('--target-training-file', default='data/test.en', help='path for target training file')
+parser.add_argument('--source-validation-file', default='orig/valid.de-en.de', help='path for source validation file')
+parser.add_argument('--target-validation-file', default='orig/valid.de-en.en', help='path for target validation file')
+parser.add_argument('--source-testing-file', default='orig/test.de-en.de', help='path for source testing file')
+parser.add_argument('--target-testing-file', default='orig/test.de-en.en', help='path for target testing file')
 parser.add_argument('--source-lang', default='German', help='name for the source language')
 parser.add_argument('--target-lang', default='English', help='name for the target language')
 parser.add_argument('--embed-dim', type=int, default=500, help='number of features in an embedded word vector')
@@ -261,16 +264,18 @@ def main():
     args = parser.parse_args()
     args.gpu = args.gpu and torch.cuda.is_available()
     
-    sortFiles('/orig/train.de-en.de', '/orig/train.de-en.en', args.source_training_file, args.target_training_file)
+    #sortFiles('orig/train.de-en.de', 'orig/train.de-en.en', args.source_training_file, args.target_training_file)
 
-    myNMT = NMT(args.embed_dim, args.input_size, args.output_size, args.encoder_hidden_size, attention_size, maxout_size, num_layers=1, bidirectional=True, args.gpu)
+    myNMT = NMT(args.embed_dim, args.input_size, args.output_size, args.encoder_hidden_size, args.attention_size, args.maxout_size, num_layers=1, bidirectional=True, gpu=args.gpu)
 
+    
     if args.gpu:
         myNMT.cuda()
 
     lang1 = Language(args.source_lang)
     lang2 = Language(args.target_lang)
-    readWords([args.source_trainging_file, args.source_validation_file, args.source_testing_file], [args.target_training_file, args.target_validation_file, args.target_testing_file], lang1, lang2)
+    ##readWords([args.source_training_file, args.source_validation_file, args.source_testing_file], [args.target_training_file, args.target_validation_file, args.target_testing_file], lang1, lang2)
+    readWords([args.source_training_file], [args.target_training_file], lang1, lang2)
 
     train(myNMT, args, lang1, lang2)
 if __name__ == '__main__':
