@@ -35,14 +35,17 @@ class Encoder(nn.Module):
         hidden = autograd.Variable(torch.zeros(self.num_layers * self.num_drections, batch_size, self.hidden_size))
         return hidden.cuda() if self.gpu else hidden
 
-    def forward(self, inputs):
+    def forward(self, inputs, inputs_len):
         # return all outputs, and last hidden state for entire sequence
-        # inputs (Variable of shape (batch_size, seq_len, input_size)): input batch sequences for encoder
+        # inputs (Variable of shape (batch_size, seq_len, input_size)): padded input batch sequences for encoder
+        # inputs_len (list of int): list of lengths for sequences in input batch
+   
+        batch_size = inputs.size()[0] 
         outputs = self.embedding(inputs)
-        length, batch_size, _ = outputs.size()
+        pack = nn.utils.rnn.pack_padded_sequence(outputs, inputs_len, batch_first=True)
         hidden = init_hidden(batch_size)
-        for _ in range(self.num_layers):
-            outputs, hidden = self.rnn(outputs, hidden)
+        outputs, hidden = self.rnn(pack, hidden)
+        outputs, _ = nn.utils.rnn.pad_packed_sequence(o,batch_first=True)
         return outputs, hidden
 
 
@@ -72,8 +75,8 @@ class Decoder(nn.Module):
         self.rnn = nn.GRU(embed_size+attention_size, hidden_size, batch_first=True)
         self.maxout = nn.Linear(hidden_size+embed_size+attention_size, maxout_size*2)
         self.output = nn.Linear(maxout_size, output_size) 
-        self.softmax = nn.Softmax()
-        self.attention = Alignment(attention_size, hidden_size*2, hidden_size)
+        # self.softmax = nn.Softmax()
+        self.attention = Alignment(attention_size, hidden_size*2, hidden_size, gpu)
 
     def forward(self, inputs, hidden, encoder_hiddens):
         # return only one step output and hidden state
@@ -82,46 +85,56 @@ class Decoder(nn.Module):
         # encoder_hiddens (Variable of shape (batch_size, seq_len, output_size)): all hidden states from encoder
         embed = self.embedding(inputs)
         context = self.attention(encoder_hiddens, hidden)
+        _, hidden = self.rnn(torch.cat((embed, context), 1), hidden)
         outputs = self.maxout(torch.cat((embed, context, hidden), 1).view(inputs.size()[0], -1))
         outputs = nn.MaxPool1d(outputs, 2, stride=2)
-        outputs = self.softmax(self.output(outputs))
-        _, hidden = self.rnn(torch.cat((embed, context), 1), hidden)
+        outputs = self.output(outputs)
         return outputs, hidden
         
 class Alignment(nn.Module):
     # attention layer
-    def __init__(self, hidden_size, encoder_hidden_size, decoder_hidden_size):
+    def __init__(self, hidden_size, encoder_hidden_size, decoder_hidden_size, gpu):
         '''
         hidden_size (int): number of features in a hidden state 
         encoder_hidden_size (int): number of features in a hidden state in encoder
         decoder_hidden_size (int): number of features in a hidden state in decoder
+        gpu (bool): if use gpu
         '''
         self.encoder_size = encoder_hidden_size
         self.decoder_size = decoder_hidden_size
         self.hidden_size = hidden_size
+        self.gpu = gpu
         self.encoder_linear = nn.Linear(encoder_hidden_size, hidden_size)
         self.decoder_linear = nn.Linear(decoder_hidden_size, hidden_size)
-        self.output = nn.Linear(hidden_size, 1)
+        self.v = nn.Parameter(torch.FloatTensor(1, hidden_size))
+
         
     def forward(self, encoder_hiddens, decoder_hidden):
         # return the context vector c 
         # encoder_hiddens (Variable of shape (batch, seq_len, encoder_size)): all hidden states from encoder
         # decoder_hidden (Variable of shape (batch, 1, decoder_size)): previous hidden state from decoder
-        out = self.encoder_linear(encoder_hiddens[0]) + self.decoder_linear(decoder_hidden)
-        scores = self.output(nn.Tanh(out))
-        for i in range(1, encoder_hiddens.size()):
-            out = self.encoder_linear(encoder_hiddens[0]) + self.decoder_linear(decoder_hidden)
-            out = self.output(nn.Tanh(out))
-            scores = torch.cat((scores, out))
-        scores = nn.Softmax(scores) 
-        result = 0
-        for i in range(encoder_hiddens.size()):
-            result = result + scores[i] * encoder_hiddens
-        return result
+
+        results = []
+        batch_size, seq_len, _ = encoder_hiddens.size() 
+        encoder_hs = self.encoder_linear(encoder_hiddens.view(-1, self.encoder_size))
+        encoder_hs = encoder_hs.view(batch_size, seq_len, -1) # of shape (batch, seq_len, self.hidden_size)
+        decoder_h = self.decoder_linear(decoder_hidden.view(batch_size, -1)) 
+        scores = ag.Variable(torch.zeros(batch_size, seq_len, 1))
+        if self.gpu: scores = scores.cuda() 
+        for i in range(batch_size): # compute context for each sequence 
+            score = [] 
+            for j in range(seq_len): # sequences may have different lengths
+                if (encoder_hs[i,j,:] == 0).all(): # all zeros mean hidden state stops here
+                    break
+                score.append(self.v.dot(nn.Tanh(encoder_hs[i,j,:] + decoder_h[i])))
+            score = torch.cat((nn.Softmax(torch.cat(scores), 1)
+            scores[i,:score.size()[0]] = score
+
+        return torch.bmm(encoder_hiddens, scores)
         
 
        
-class Model(nn.Module):
+class NMT(nn.Module):
     def __init__(self, embed_size, input_size, output_size, hidden_size, attention_size, maxout_size, num_layers, bidirectional, gpu):
         self.encoder = Encoder(embed_size, input_size, hidden_size, num_layers, bidirectional, gpu)
         self.decoder = Decoder(embed_size, output_size, hidden_size, attention_size, maxout_size, gpu)
