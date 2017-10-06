@@ -75,11 +75,11 @@ class Decoder(nn.Module):
     def init_hidden(self, encoder_hidden):
         # transfer encoder hidden state into initial hidden state for decoder
         # assume encoder and decoder have the same hidden_size, encoder is bidirectional
-        hidden = torch.transpose(encoder_hidden, 0, 1)
-        hidden = torch.transpose(hidden, 1, 2).contiguous()
+        hidden = encoder_hidden.permute(1, 2, 0).contiguous() 
         hidden = hidden.view(hidden.size()[0], -1)
-        hidden = hidden.unsqueeze(1)
-        return self.init_linear(hidden)
+        hidden = self.init_linear(hidden)
+        hidden = hidden.unsqueeze(1) 
+        return hidden
         
 
     def forward(self, inputs, hidden, encoder_hiddens):
@@ -90,6 +90,7 @@ class Decoder(nn.Module):
         batch_size = inputs.size()[0]
         inputs = inputs.unsqueeze(1)
         embed = self.embedding(inputs)
+        hidden = hidden.transpose(0, 1) # wired, the intput hidden state should have shape of (seq_len, batch_size, hidden_size), even if batch_first = True
         context = self.attention(encoder_hiddens, hidden)
         hybrid_inputs = torch.cat((embed, context), 2)
         _, hidden = self.rnn(hybrid_inputs, hidden)

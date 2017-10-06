@@ -13,30 +13,47 @@ from model import *
 class Language:
     # information about the language
     # contain all words from files, doesn't remove rare words
-    def __init__(self, name):
+    def __init__(self, name, threshold):
         # name (string): language name
+        # threshold (int): threshold for rare words, which will be mapped to sepcial token
         self.name = name
-        self.word2index = {}
-        self.index2word = {0: "PAD", 1: "SOS", 2: "EOS"}
-        self.word2count = {}
-        self.num_words = 3 # total number of words
+        self.threshold = threshold
+        self.word2index = {"<PAD>": 0, "<SOS>": 1, "<EOS>": 2, "<UNK>": 3}
+        self.index2word = {0: "<PAD>", 1: "<SOS>", 2: "<EOS>", 3: "<UNK>"}
+        self.index2count = {0: 1, 1: 1, 2: 1, 3: 1}
+        self.num_words = 4 # total number of words
         self.PAD_token = 0
         self.SOS_token = 1
         self.EOS_token = 2
+        self.UNK_token = 3
 
 
     def addWord(self, word):
         if word not in self.word2index:
             self.word2index[word] = self.num_words
-            self.word2count[word] = 1
+            self.index2count[self.num_words] = 1
             self.index2word[self.num_words] = word
             self.num_words += 1
         else:
-            self.word2count[word] += 1
+            self.index2count[self.word2index[word]] += 1
+
     def addSentence(self, sentence):
         for word in sentence.split(" "):
             self.addWord(word)
 
+    def removeRare(self):
+        c = 3
+        for i in range(4, self.num_words):
+            w = self.index2word[i]
+            if self.index2count[i] < self.threshold:
+                self.index2count[self.UNK_token] += self.index2count[i]
+                self.word2index[w] = self.UNK_token
+            else:
+                c += 1
+                self.word2index[w] = c
+                self.index2word[c] = w
+                self.index2count[c] = self.index2count[i]
+        self.num_words = c + 1
         
 def sortFiles(file1, file2, newfile1, newfile2): 
     # sort the sentence pairs in file1 and file2 in decreasing order 
@@ -141,8 +158,8 @@ def train(myNMT, args, lang1, lang2):
         source_variable = ag.Variable(torch.LongTensor(source_batch))
         target_variable = ag.Variable(torch.LongTensor(target_batch))
         if args.gpu:
-            source_variable = source.variable.cuda()
-            target_variable = target.variable.cuda()
+            source_variable = source_variable.cuda()
+            target_variable = target_variable.cuda()
         training_batches.append((source_variable, target_variable))
        
     for e in range(args.num_epoch):
@@ -180,7 +197,9 @@ def train(myNMT, args, lang1, lang2):
             torch.nn.utils.clip_grad_norm(myNMT.parameters(), args.clip)
             myoptim.step()
 
-        print (evaluate(myNMT, args.source_validation_file, args.target_validation_file, args, lang1, lang2), file=open(args.process_file, 'a'))
+        test = evaluate(myNMT, args.source_validation_file, args.target_validation_file, args, lang1, lang2)
+        print ("epoch ", e, " evaluate accuracy ", test)
+        print ("epoch ", e, " evaluate accuracy ", test, file=open(args.process_file, 'a'))
         torch.save(myNMT.state_dict(), args.weights_file+str(e))
             
 
@@ -249,7 +268,7 @@ def evaluate(myNMT, source_file, target_file, args, lang1, lang2, predict=False,
 parser = argparse.ArgumentParser(description='NMT')
 parser.add_argument('--lr', type=float, default=0.0002, help='learning rate') 
 parser.add_argument('--num-epoch', type=int, default=25, help='total number of epochs to train; in each epoch we train all sentences once' )
-parser.add_argument('--batch', type=int, default=64, help='batch size for training')
+parser.add_argument('--batch_size', type=int, default=64, help='batch size for training')
 parser.add_argument('--gpu', type=bool, default=True, help='if use gpu')
 parser.add_argument('--source-training-file', default='data/train.de-en.de', help='path for source training file')
 parser.add_argument('--target-training-file', default='data/train.de-en.en', help='path for target training file')
@@ -272,6 +291,7 @@ parser.add_argument('--decoder-num-layers', type=int, default=1, help='the numbe
 parser.add_argument('--clip', type=float, default=40, help='clip gradient norm')
 parser.add_argument('--weights-file', default='model-parameter', help='path to file to save model parameters')
 parser.add_argument('--process-file', default='training-process', help='path to file recording training process')
+parser.add_argument('--threshold', type=int, default=3, help='threshold for language dictionary to remove rare words')
 
 
 def main():
@@ -280,15 +300,20 @@ def main():
     
     #sortFiles('orig/train.de-en.de', 'orig/train.de-en.en', args.source_training_file, args.target_training_file)
 
-    lang1 = Language(args.source_lang)
-    lang2 = Language(args.target_lang)
+    lang1 = Language(args.source_lang, args.threshold)
+    lang2 = Language(args.target_lang, args.threshold)
     readWords([args.source_training_file, args.source_validation_file, args.source_testing_file], [args.target_training_file], lang1, lang2)
+    lang1.removeRare()
+    lang2.removeRare()
     args.input_size, args.output_size = lang1.num_words, lang2.num_words
+    print (lang1.num_words, lang2.num_words)
     
     myNMT = NMT(args.embed_dim, args.input_size, args.output_size, args.encoder_hidden_size, args.attention_size, args.maxout_size, num_layers=1, bidirectional=True, gpu=args.gpu) 
     
     if args.gpu:
         myNMT.cuda()
+    print (myNMT) 
+    print ("start training")
 
     train(myNMT, args, lang1, lang2)
 
