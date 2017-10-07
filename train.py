@@ -196,10 +196,11 @@ def train(myNMT, args, lang1, lang2):
             loss.backward()
             torch.nn.utils.clip_grad_norm(myNMT.parameters(), args.clip)
             myoptim.step()
+            print (time.strftime('%Hh %Mm %Ss', time.localtime()), " batch ", i)
 
         test = evaluate(myNMT, args.source_validation_file, args.target_validation_file, args, lang1, lang2)
-        print ("epoch ", e, " evaluate accuracy ", test)
-        print ("epoch ", e, " evaluate accuracy ", test, file=open(args.process_file, 'a'))
+        print (time.strftime('%Hh %Mm %Ss', time.localtime()), " epoch ", e, " evaluate accuracy ", test)
+        print (time.strftime('%Hh %Mm %Ss', time.localtime()), " epoch ", e, " evaluate accuracy ", test, file=open(args.process_file, 'a'))
         torch.save(myNMT.state_dict(), args.weights_file+str(e))
             
 
@@ -268,7 +269,7 @@ def evaluate(myNMT, source_file, target_file, args, lang1, lang2, predict=False,
 parser = argparse.ArgumentParser(description='NMT')
 parser.add_argument('--lr', type=float, default=0.0002, help='learning rate') 
 parser.add_argument('--num-epoch', type=int, default=25, help='total number of epochs to train; in each epoch we train all sentences once' )
-parser.add_argument('--batch_size', type=int, default=64, help='batch size for training')
+parser.add_argument('--batch_size', type=int, default=256, help='batch size for training')
 parser.add_argument('--gpu', type=bool, default=True, help='if use gpu')
 parser.add_argument('--source-training-file', default='data/train.de-en.de', help='path for source training file')
 parser.add_argument('--target-training-file', default='data/train.de-en.en', help='path for target training file')
